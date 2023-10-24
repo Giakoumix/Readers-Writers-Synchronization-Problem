@@ -1,0 +1,86 @@
+
+Τρεχουμε στο folder που ειναι το Makefile:
+    make run για την δημιουργια και την εκτελεση του κωδικα
+    make clean για την καταστροφη των binary, .o , txt files
+
+struct shm:
+    char *segment
+    int seg_id
+    int read_count
+    int children_count
+    int counter
+
+Στην shared memory αποθηκευω το:
+    id του segment που ειναι στην μνημη
+    το πληθος των ενεργων readers σε ενα segment (read_count)
+    το πληθος των παιδιων που υπαρχουν ακομα
+    ενα counter για το ποσα παιδια ειναι στην ουρα fifo
+
+
+semaphore mutex /* initialized to 1 */
+semaphore wrt /* initialized to 1 */
+semaphore fifo /* initialized to 1 */
+semaphore eor /* initialized to 0 */
+
+Οι σημαφοροι μου ειναι οι εξεις:
+    mutex για τον καθε reader
+    wrt για την εγγραφη απο τον parent
+    eor για το οταν τελειωσουν οι readers το reading 
+    fifo για να περιμενουν οι readers στην ουρα 
+
+parent:
+    do:
+        wait(eor)
+        if shm->children_count == 0
+            break
+        wait(wrt)
+            bring the segment to memory
+        post(wrt)
+    while(True)
+
+Parent:
+    Ο parent περιμενει στον σημαφορο eor δηλαδη μεχρι να τελειωσουν 
+    ολοι οι readers το reading ή μονο για την πρωτη φορα μεχρι να
+    να γινει το πρωτο request. Επειτα περιμενει τον σημαφορο wrt για να
+    μπορεσει να γραψει μονο εκεινος στην shared memory.
+
+Child:
+    Τα παιδια για το πρωτο request μπαινουν στην fifo κανουν wait τον mutex και
+    εξασφαλιζουμε οτι μονο ο πρωτος στην fifo θα αλλαξει το seg_id της shared memory
+    με το shm->counter.
+
+    Οταν ο reader μπαινει στο Reading While αυξανει το shm->read_count
+    Επειτα ξεκινα το reading process.
+    
+    Αν το segment ειναι το ζητουμενο τοτε:
+        Κανει την εγγραφη οπως πρεπει στο 
+        αρχειο με ονομα το pid του child process. (Γραφει μονο τα mileseconds 
+        του χρονου υποβολης και απαντησης του request χρησιμοποιωντας την
+        gettimeofday())
+        Αν τελειωσουν τα requests τοτε ο reader μειωνει το shm->children_count
+        και το shm->read_count .Αν δεν υπαρχουν αλλα παιδια τοτε κανει post 
+        τον eor (δηλαδη τον σημαφορο που ελεγχει οτι τελειωσαν οι readers την δουλεια τους)
+        Αν υπαρχουν ακομα παιδια και το shm->counter δεν ειναι 0 τοτε γινεται post ο σημαφορος 
+        fifo στην περιπτωσει που εχουν κολλησει τα αλλα παιδια στην ουρα fifo. Αν δεν υπαρχουν
+        αλλοι readers τοτε γινεται post ο wrt στην περιπτωση που ο reader που φευγει ειναι και ο
+        τελευταιος reader στο segment ωστε να μπορει ο parent να γραψει το επομενο segment.
+        Τελος το child κανει exit
+    Αν το segment δεν ειναι το ζητουμενο τοτε:
+        Βγαινει απο το reading process
+    
+    Οταν ο reader αποχωρει:
+        Μειωνει τον shm->read_count
+        Οταν το shm->read_count ειναι 0 τοτε γινεται post ο σημαφορος fifo ωστε
+        να ξεκινησουν τα υπολοιπα παιδια που περιμενουν στην fifo ουρα να στειλουν το 
+        τμημα που θελουν να ανακληθει.
+        Επειτα γινεται wait(fifo) οπου εδω ειναι η δουλεια της ουρας υλοποιημενη απο αυτον
+        τον σημαφορο. Οποιος τον προλαβει πρωτο συμφωνα και με τον scheduler θα εχει και την δυνατοτητα να 
+        αλλαξει το seg_id και να κανει post τον eor ωστε να μπορεσει ο parent να αλλαξει το 
+        segment στην shared memory. Μονο ο πρωτος που θα προλαβει τον σημαφορο fifo θα μπροεσει να αλλαξει
+        το seg_id λογω του shm->counter ο οποιος οσο ειναι λιγοτερος απο τα ενεργα παιδια τοτε
+        γινεται post η fifo ωστε να ξεκολλησουν ολα τα υπολοιπα παιδια και να προχωρησουν με τις δουλειες τους
+        εκτος του τελευταιου παιδιου. Αυτο συμβαινει γιατι το τελευταιο παιδι δεν πρεπει να κανει post την fifo
+        ωστε οι επομενοι readers που θα αποχωρησουν απο το νεο πλεον segment, να περιμενουν στην fifo και να μην βρουν τον σημαφορο με
+        την τιμη 1 και να μπουν ενω δεν εχουν τελειωσει ολοι το reading. Ο σημαφορος της fifo γινεται post
+        μονο οταν, οπως ανεφερα πιο πανω, το shm->read_count ειναι 0.   
+
